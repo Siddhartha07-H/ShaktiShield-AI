@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none">
+  <defs>
+    <linearGradient id="shieldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8b5cf6" />
+      <stop offset="50%" stop-color="#6366f1" />
+      <stop offset="100%" stop-color="#ec4899" />
+    </linearGradient>
+    <linearGradient id="innerGlow" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.3" />
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0" />
+    </linearGradient>
+  </defs>
+  <!-- Outer Shield -->
+  <path d="M50 8 L85 22 C85 62 50 90 50 90 C50 90 15 62 15 22 Z" fill="url(#shieldGrad)" />
+  <!-- Gloss overlay -->
+  <path d="M50 12 L80 25 C80 58 50 84 50 84 C50 84 20 58 20 25 Z" fill="url(#innerGlow)" />
+  <!-- Inner Shield Core -->
+  <path d="M50 20 L74 31 C74 58 50 78 50 78 C50 78 26 58 26 31 Z" fill="#0c1122" />
+  <!-- Shakti Trishul & Star Symbol -->
+  <path d="M50 26 L50 68" stroke="url(#shieldGrad)" stroke-width="4" stroke-linecap="round" />
+  <path d="M40 38 C40 48 48 52 50 52 C52 52 60 48 60 38" stroke="url(#shieldGrad)" stroke-width="3" stroke-linecap="round" fill="none" />
+  <circle cx="50" cy="34" r="3" fill="#ffffff" />
+</svg>
