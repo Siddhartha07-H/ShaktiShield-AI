@@ -19,12 +19,14 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { api } from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { SOSIncident } from '../types';
 import { Modal } from '../components/Modal';
 import { StatusBadge } from '../components/StatusBadge';
 
 export const EmergencySOSPage: React.FC = () => {
+  const { isAuthenticated } = useAuth();
   const { showToast } = useToast();
 
   const [coords, setCoords] = useState<{ latitude: number | null; longitude: number | null; accuracy: number | null }>({
@@ -191,6 +193,20 @@ export const EmergencySOSPage: React.FC = () => {
             <span className="text-amber-300">Location permission denied (Coordinates will be simulated)</span>
           )}
         </div>
+
+        {!isAuthenticated && (
+          <div className="max-w-md mx-auto mb-6 p-3.5 rounded-xl bg-amber-950/40 border border-amber-500/40 text-xs text-amber-200 flex items-center justify-between gap-3 text-left">
+            <span>
+              <strong>Note:</strong> You are not signed in. Sign in to link alerts with your trusted contacts.
+            </span>
+            <Link
+              to="/login"
+              className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs shrink-0 transition-colors"
+            >
+              Sign In
+            </Link>
+          </div>
+        )}
 
         {/* The Big SOS Button */}
         <div className="py-6 flex flex-col items-center justify-center">
