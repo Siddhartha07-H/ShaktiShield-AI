@@ -279,3 +279,5 @@ For complete step-by-step instructions with environment variable lists, see [doc
 
 Built with dedication to women's safety and technological empowerment.  
 Released under the **MIT License**.
+#   S h a k t i S h i e l d - A I  
+ 
