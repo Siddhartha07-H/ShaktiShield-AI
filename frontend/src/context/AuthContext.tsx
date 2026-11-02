@@ -1,11 +1,13 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { User, AuthResponse } from '../types';
+import { User, AuthResponse, AdminMFARequiredResponse } from '../types';
 import { api } from '../services/api';
 import { useToast } from './ToastContext';
 
 interface AdminAuthResult {
   success: boolean;
   isPending?: boolean;
+  mfaRequired?: boolean;
+  mfaToken?: string;
   error?: string;
 }
 
@@ -18,6 +20,7 @@ interface AuthContextType {
   isLoading: boolean;
   login: (credentials: { email: string; password: string; remember_me?: boolean }) => Promise<{ success: boolean; role?: string; isPending?: boolean; error?: string }>;
   adminLogin: (credentials: { email: string; password: string }) => Promise<AdminAuthResult>;
+  verifyAdminMfa: (mfaToken: string, totpCode: string) => Promise<AdminAuthResult>;
   register: (data: any) => Promise<boolean>;
   adminRegister: (data: any) => Promise<AdminAuthResult>;
   logout: () => void;
@@ -47,6 +50,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch (error: any) {
       console.warn('Session expired or invalid token:', error.message);
       localStorage.removeItem('shaktishield_token');
+      localStorage.removeItem('shaktishield_refresh_token');
       setToken(null);
       setUser(null);
     } finally {
@@ -63,6 +67,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setIsLoading(true);
       const res = await api.post<AuthResponse>('/api/auth/login', credentials);
       localStorage.setItem('shaktishield_token', res.access_token);
+      if (res.refresh_token) {
+        localStorage.setItem('shaktishield_refresh_token', res.refresh_token);
+      }
       setToken(res.access_token);
       setUser(res.user);
       const isPending = res.user.role === 'admin' && res.user.approval_status === 'PENDING_APPROVAL';
@@ -80,20 +87,61 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const adminLogin = async (credentials: { email: string; password: string }): Promise<AdminAuthResult> => {
     try {
       setIsLoading(true);
-      const res = await api.post<AuthResponse>('/api/auth/admin/login', credentials);
-      localStorage.setItem('shaktishield_token', res.access_token);
-      setToken(res.access_token);
-      setUser(res.user);
+      const res = await api.post<AuthResponse | AdminMFARequiredResponse>('/api/auth/admin/login', credentials);
 
-      if (res.user.approval_status === 'PENDING_APPROVAL') {
+      // Check if MFA verification is required
+      if ('mfa_required' in res && res.mfa_required) {
+        showToast('Please provide your 6-digit Multi-Factor Authentication code.', 'info');
+        return {
+          success: false,
+          mfaRequired: true,
+          mfaToken: res.mfa_token,
+        };
+      }
+
+      const authRes = res as AuthResponse;
+      localStorage.setItem('shaktishield_token', authRes.access_token);
+      if (authRes.refresh_token) {
+        localStorage.setItem('shaktishield_refresh_token', authRes.refresh_token);
+      }
+      setToken(authRes.access_token);
+      setUser(authRes.user);
+
+      if (authRes.user.approval_status === 'PENDING_APPROVAL') {
         showToast('Application pending official authorization review.', 'info');
         return { success: true, isPending: true };
       }
 
-      showToast(`Administrator authenticated: ${res.user.full_name}`, 'success');
+      showToast(`Administrator authenticated: ${authRes.user.full_name}`, 'success');
       return { success: true, isPending: false };
     } catch (error: any) {
       const msg = error.message || 'Administrator authentication failed.';
+      showToast(msg, 'error');
+      return { success: false, error: msg };
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const verifyAdminMfa = async (mfaToken: string, totpCode: string): Promise<AdminAuthResult> => {
+    try {
+      setIsLoading(true);
+      const res = await api.post<AuthResponse>('/api/auth/admin/mfa-verify', {
+        mfa_token: mfaToken,
+        totp_code: totpCode,
+      });
+
+      localStorage.setItem('shaktishield_token', res.access_token);
+      if (res.refresh_token) {
+        localStorage.setItem('shaktishield_refresh_token', res.refresh_token);
+      }
+      setToken(res.access_token);
+      setUser(res.user);
+
+      showToast(`Administrator authenticated: ${res.user.full_name}`, 'success');
+      return { success: true, isPending: false };
+    } catch (error: any) {
+      const msg = error.message || 'Invalid Multi-Factor Authentication code.';
       showToast(msg, 'error');
       return { success: false, error: msg };
     } finally {
@@ -106,6 +154,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setIsLoading(true);
       const res = await api.post<AuthResponse>('/api/auth/register', data);
       localStorage.setItem('shaktishield_token', res.access_token);
+      if (res.refresh_token) {
+        localStorage.setItem('shaktishield_refresh_token', res.refresh_token);
+      }
       setToken(res.access_token);
       setUser(res.user);
       showToast('Registration successful! Safety shield activated.', 'success');
@@ -124,6 +175,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setIsLoading(true);
       const res = await api.post<AuthResponse>('/api/auth/admin/register', data);
       localStorage.setItem('shaktishield_token', res.access_token);
+      if (res.refresh_token) {
+        localStorage.setItem('shaktishield_refresh_token', res.refresh_token);
+      }
       setToken(res.access_token);
       setUser(res.user);
       showToast('Administrator credentials submitted for review.', 'info');
@@ -144,6 +198,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // Ignore API logout error
     } finally {
       localStorage.removeItem('shaktishield_token');
+      localStorage.removeItem('shaktishield_refresh_token');
       setToken(null);
       setUser(null);
       showToast('Logged out securely.', 'info');
@@ -180,6 +235,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isLoading,
         login,
         adminLogin,
+        verifyAdminMfa,
         register,
         adminRegister,
         logout,

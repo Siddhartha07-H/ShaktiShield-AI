@@ -1,4 +1,5 @@
 import uuid
+import secrets
 from datetime import datetime, timezone
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status, Request
@@ -37,7 +38,7 @@ def trigger_sos(
     - Records emergency notification in system (Demo Mode)
     """
     now = datetime.now(timezone.utc)
-    short_code = str(uuid.uuid4()).replace("-", "")[:8].upper()
+    short_code = secrets.token_hex(8).upper()
     incident_code = f"SOS-{now.strftime('%Y%m%d')}-{short_code}"
 
     # Calculate SHA-256 integrity hash

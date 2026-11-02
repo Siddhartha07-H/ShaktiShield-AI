@@ -1,21 +1,34 @@
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from typing import Union
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.security import (
     hash_password, verify_password, create_access_token,
-    get_current_user, hash_invitation_code
+    issue_refresh_token, rotate_refresh_token,
+    revoke_access_token, revoke_all_user_tokens,
+    create_mfa_challenge_token, decode_token,
+    get_current_user, get_current_admin,
+    hash_invitation_code, set_auth_cookies, clear_auth_cookies
 )
-from app.core.rate_limit import rate_limit_login, rate_limit_register
+from app.core.mfa import generate_totp_secret, generate_backup_code, verify_totp, get_totp_uri
+from app.core.rate_limit import (
+    rate_limit_login, rate_limit_admin_login, rate_limit_register,
+    rate_limit_refresh, rate_limit_password_reset,
+    check_account_lockout, handle_failed_login, handle_successful_login,
+    get_client_ip
+)
 from app.core.audit import log_audit_event
 from app.database.session import get_db
 from app.models.user import User
 from app.models.admin_invite import AdminInvitationCode
 from app.schemas.user import (
     UserRegister, AdminRegister, UserLogin, AdminLogin,
-    UserResponse, UserUpdate, TokenResponse,
-    PasswordResetRequest, PasswordResetResponse
+    UserResponse, UserUpdate, TokenResponse, TokenRefreshRequest,
+    PasswordResetRequest, PasswordResetResponse,
+    AdminMFARequiredResponse, AdminMFAVerifyRequest,
+    AdminMFASetupResponse, AdminMFAEnableRequest
 )
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -23,6 +36,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED, dependencies=[Depends(rate_limit_register)])
 def register_user(
     request: Request,
+    response: Response,
     user_in: UserRegister,
     db: Session = Depends(get_db)
 ):
@@ -30,6 +44,7 @@ def register_user(
     Register a standard safety platform user.
     Always assigns role 'user' and approval_status 'APPROVED'.
     Prevents privilege escalation.
+    Issues short-lived access token and secure refresh token.
     """
     existing_user = db.query(User).filter(User.email == user_in.email.lower()).first()
     if existing_user:
@@ -54,31 +69,41 @@ def register_user(
     db.commit()
     db.refresh(new_user)
 
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = get_client_ip(request)
     log_audit_event(db, "AUTH_REGISTER_USER", f"New user registered: {new_user.email}", new_user.id, client_ip)
 
-    token = create_access_token(data={"sub": str(new_user.id), "email": new_user.email, "role": new_user.role})
+    access_token = create_access_token(data={"sub": str(new_user.id), "email": new_user.email, "role": new_user.role})
+    refresh_token = issue_refresh_token(db, new_user.id)
+    set_auth_cookies(response, access_token, refresh_token)
 
     return TokenResponse(
-        access_token=token,
+        access_token=access_token,
+        refresh_token=refresh_token,
         token_type="bearer",
+        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         user=UserResponse.model_validate(new_user)
     )
 
 @router.post("/login", response_model=TokenResponse, dependencies=[Depends(rate_limit_login)])
 def login_user(
     request: Request,
+    response: Response,
     credentials: UserLogin,
     db: Session = Depends(get_db)
 ):
     """
     Authenticate a user.
-    Verifies Argon2 password hash. Returns JWT access token and user role.
+    Verifies Argon2 password hash. Protects against brute-force attacks with account lockout.
+    Returns short-lived access token (15 mins), secure refresh token (7 days), and sets HttpOnly cookies.
     """
+    client_ip = get_client_ip(request)
     user = db.query(User).filter(User.email == credentials.email.lower()).first()
-    client_ip = request.client.host if request.client else "unknown"
+
+    # Brute-force account lockout protection
+    check_account_lockout(user)
 
     if not user or not verify_password(credentials.password, user.hashed_password):
+        handle_failed_login(db, user, credentials.email, client_ip)
         log_audit_event(db, "AUTH_LOGIN_FAILED", f"Failed user login attempt for: {credentials.email}", ip_address=client_ip)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -91,19 +116,59 @@ def login_user(
             detail="Your account has been deactivated. Please contact platform support."
         )
 
+    handle_successful_login(db, user)
     log_audit_event(db, "AUTH_LOGIN_SUCCESS", f"User logged in: {user.email}", user.id, client_ip)
 
-    token = create_access_token(data={"sub": str(user.id), "email": user.email, "role": user.role})
+    access_token = create_access_token(data={"sub": str(user.id), "email": user.email, "role": user.role})
+    refresh_token = issue_refresh_token(db, user.id)
+    set_auth_cookies(response, access_token, refresh_token)
 
     return TokenResponse(
-        access_token=token,
+        access_token=access_token,
+        refresh_token=refresh_token,
         token_type="bearer",
+        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        user=UserResponse.model_validate(user)
+    )
+
+@router.post("/refresh", response_model=TokenResponse, dependencies=[Depends(rate_limit_refresh)])
+def refresh_session_token(
+    request: Request,
+    response: Response,
+    payload: TokenRefreshRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Rotate refresh token and issue a fresh access token.
+    Accepts refresh token in JSON payload or reads HttpOnly 'shakti_refresh' cookie.
+    Enforces strict reuse detection: if a revoked refresh token is presented, all sessions are terminated.
+    """
+    raw_token = payload.refresh_token or request.cookies.get("shakti_refresh")
+    if not raw_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token not provided in body or cookie."
+        )
+
+    user, new_refresh_token = rotate_refresh_token(db, raw_token)
+    new_access_token = create_access_token(data={"sub": str(user.id), "email": user.email, "role": user.role})
+    set_auth_cookies(response, new_access_token, new_refresh_token)
+
+    client_ip = get_client_ip(request)
+    log_audit_event(db, "AUTH_TOKEN_REFRESH", f"Session refreshed for: {user.email}", user.id, client_ip)
+
+    return TokenResponse(
+        access_token=new_access_token,
+        refresh_token=new_refresh_token,
+        token_type="bearer",
+        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         user=UserResponse.model_validate(user)
     )
 
 @router.post("/admin/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED, dependencies=[Depends(rate_limit_register)])
 def register_admin(
     request: Request,
+    response: Response,
     admin_in: AdminRegister,
     db: Session = Depends(get_db)
 ):
@@ -123,14 +188,14 @@ def register_admin(
     ).first()
 
     if not invitation:
-        client_ip = request.client.host if request.client else "unknown"
+        client_ip = get_client_ip(request)
         log_audit_event(db, "ADMIN_REGISTER_REJECTED", f"Invalid invitation code attempt for {admin_in.email}", ip_address=client_ip)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Authorization failed: Invalid or already utilized administrator invitation code."
         )
 
-    # Check expiry (make timezone aware if needed)
+    # Check expiry
     exp = invitation.expires_at
     if exp.tzinfo is None:
         exp = exp.replace(tzinfo=timezone.utc)
@@ -171,7 +236,7 @@ def register_admin(
     db.commit()
     db.refresh(new_admin)
 
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = get_client_ip(request)
     log_audit_event(
         db,
         "ADMIN_REGISTER_PENDING",
@@ -180,29 +245,36 @@ def register_admin(
         client_ip
     )
 
-    token = create_access_token(data={"sub": str(new_admin.id), "email": new_admin.email, "role": new_admin.role})
+    access_token = create_access_token(data={"sub": str(new_admin.id), "email": new_admin.email, "role": new_admin.role})
+    refresh_token = issue_refresh_token(db, new_admin.id)
+    set_auth_cookies(response, access_token, refresh_token)
 
     return TokenResponse(
-        access_token=token,
+        access_token=access_token,
+        refresh_token=refresh_token,
         token_type="bearer",
+        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         user=UserResponse.model_validate(new_admin)
     )
 
-@router.post("/admin/login", response_model=TokenResponse, dependencies=[Depends(rate_limit_login)])
+@router.post("/admin/login", response_model=Union[TokenResponse, AdminMFARequiredResponse], dependencies=[Depends(rate_limit_admin_login)])
 def login_admin(
     request: Request,
+    response: Response,
     credentials: AdminLogin,
     db: Session = Depends(get_db)
 ):
     """
     Authenticate an official administrator.
-    Server verifies that the user's database role is 'admin'.
-    Returns account details with approval_status.
+    Server verifies role='admin'. Enforces brute-force lockout and MFA verification if configured.
     """
+    client_ip = get_client_ip(request)
     user = db.query(User).filter(User.email == credentials.email.lower()).first()
-    client_ip = request.client.host if request.client else "unknown"
+
+    check_account_lockout(user)
 
     if not user or not verify_password(credentials.password, user.hashed_password):
+        handle_failed_login(db, user, credentials.email, client_ip)
         log_audit_event(db, "ADMIN_LOGIN_FAILED", f"Failed admin login attempt for: {credentials.email}", ip_address=client_ip)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -234,15 +306,123 @@ def login_admin(
             detail="Administrator access has been suspended."
         )
 
+    # Check Multi-Factor Authentication requirement
+    if user.mfa_enabled and user.mfa_secret:
+        mfa_token = create_mfa_challenge_token(user.id, user.email, user.role)
+        log_audit_event(db, "ADMIN_MFA_CHALLENGE_ISSUED", f"MFA challenge issued for admin {user.email}", user.id, client_ip)
+        return AdminMFARequiredResponse(
+            mfa_required=True,
+            mfa_token=mfa_token,
+            message="Please provide your 6-digit Multi-Factor Authentication code."
+        )
+
+    handle_successful_login(db, user)
     log_audit_event(db, "ADMIN_LOGIN_SUCCESS", f"Administrator logged in: {user.email} (Status: {user.approval_status})", user.id, client_ip)
 
-    token = create_access_token(data={"sub": str(user.id), "email": user.email, "role": user.role})
+    access_token = create_access_token(data={"sub": str(user.id), "email": user.email, "role": user.role})
+    refresh_token = issue_refresh_token(db, user.id)
+    set_auth_cookies(response, access_token, refresh_token)
 
     return TokenResponse(
-        access_token=token,
+        access_token=access_token,
+        refresh_token=refresh_token,
         token_type="bearer",
+        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         user=UserResponse.model_validate(user)
     )
+
+@router.post("/admin/mfa-verify", response_model=TokenResponse)
+def verify_admin_mfa(
+    request: Request,
+    response: Response,
+    payload: AdminMFAVerifyRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Complete Administrator login via TOTP Multi-Factor Authentication code.
+    Validates challenge token and 6-digit TOTP code.
+    """
+    token_data = decode_token(payload.mfa_token)
+    if not token_data or token_data.get("type") != "mfa_challenge":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired MFA verification challenge."
+        )
+
+    user_id = token_data.get("sub")
+    user = db.query(User).filter(User.id == int(user_id)).first()
+    if not user or user.role != "admin" or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Administrator record invalid or inactive."
+        )
+
+    client_ip = get_client_ip(request)
+
+    # Verify TOTP code against administrator's stored secret
+    is_valid = verify_totp(user.mfa_secret or "", payload.totp_code)
+    if not is_valid:
+        handle_failed_login(db, user, user.email, client_ip)
+        log_audit_event(db, "ADMIN_MFA_FAILED", f"Invalid MFA code provided for admin {user.email}", user.id, client_ip)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid MFA verification code."
+        )
+
+    handle_successful_login(db, user)
+    log_audit_event(db, "ADMIN_MFA_SUCCESS", f"MFA passed for admin {user.email}", user.id, client_ip)
+
+    access_token = create_access_token(data={"sub": str(user.id), "email": user.email, "role": user.role})
+    refresh_token = issue_refresh_token(db, user.id)
+    set_auth_cookies(response, access_token, refresh_token)
+
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="bearer",
+        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        user=UserResponse.model_validate(user)
+    )
+
+@router.post("/admin/mfa-setup", response_model=AdminMFASetupResponse)
+def setup_admin_mfa(
+    admin: User = Depends(get_current_admin)
+):
+    """
+    Generate a new TOTP secret, standardized otpauth URI, and emergency backup code for MFA configuration.
+    """
+    secret = generate_totp_secret()
+    backup_code = generate_backup_code()
+    otpauth_url = get_totp_uri(secret, admin.email)
+
+    return AdminMFASetupResponse(
+        secret=secret,
+        otpauth_url=otpauth_url,
+        backup_code=backup_code
+    )
+
+@router.post("/admin/mfa-enable", response_model=UserResponse)
+def enable_admin_mfa(
+    payload: AdminMFAEnableRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_current_admin)
+):
+    """
+    Verify the first TOTP code generated with the secret and activate Multi-Factor Authentication.
+    """
+    if not verify_totp(payload.secret, payload.totp_code):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The verification code did not match the provided MFA secret. Setup not completed."
+        )
+
+    admin.mfa_enabled = True
+    admin.mfa_secret = payload.secret
+    db.commit()
+    db.refresh(admin)
+
+    log_audit_event(db, "ADMIN_MFA_ACTIVATED", f"Admin {admin.email} activated Multi-Factor Authentication", admin.id)
+    return UserResponse.model_validate(admin)
 
 @router.get("/me", response_model=UserResponse)
 def get_current_user_profile(
@@ -278,20 +458,38 @@ def update_profile(
 @router.post("/logout")
 def logout_user(
     request: Request,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Client-side token disposal confirmation with audit log."""
-    client_ip = request.client.host if request.client else "unknown"
-    log_audit_event(db, "AUTH_LOGOUT", f"User logged out: {current_user.email}", current_user.id, client_ip)
-    return {"message": "Successfully logged out. Please clear your local session token."}
+    """
+    Secure server-side logout:
+    - Blacklists current access token in RevokedToken table.
+    - Revokes active refresh tokens for this session.
+    - Clears HttpOnly authentication cookies.
+    - Logs security audit trail.
+    """
+    jti = getattr(request.state, "current_token_jti", None)
+    exp = getattr(request.state, "current_token_exp", None)
+    if jti and exp:
+        revoke_access_token(db, jti, current_user.id, int(exp))
 
-@router.post("/forgot-password", response_model=PasswordResetResponse)
+    # Revoke user refresh tokens
+    revoke_all_user_tokens(db, current_user.id)
+
+    # Clear HttpOnly cookies
+    clear_auth_cookies(response)
+
+    client_ip = get_client_ip(request)
+    log_audit_event(db, "AUTH_LOGOUT", f"User logged out securely: {current_user.email}", current_user.id, client_ip)
+    return {"message": "Successfully logged out. Tokens have been revoked and session cookies cleared."}
+
+@router.post("/forgot-password", response_model=PasswordResetResponse, dependencies=[Depends(rate_limit_password_reset)])
 def request_password_reset(
     req: PasswordResetRequest,
     db: Session = Depends(get_db)
 ):
-    """Password reset request endpoint."""
+    """Password reset request endpoint protected by rate limiting."""
     user = db.query(User).filter(User.email == req.email.lower()).first()
     if not settings.EMAIL_PROVIDER_CONFIGURED:
         return PasswordResetResponse(

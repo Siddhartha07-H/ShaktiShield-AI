@@ -1,4 +1,5 @@
 import os
+import sys
 from typing import List, Union
 from pydantic import AnyHttpUrl, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -11,7 +12,23 @@ class Settings(BaseSettings):
     # Security
     SECRET_KEY: str = os.getenv("JWT_SECRET", "shaktishield-super-secret-key-change-in-production-2026")
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24 hours
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 15  # Short-lived access token: 15 minutes
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7     # Secure refresh token: 7 days
+    MFA_CHALLENGE_EXPIRE_MINUTES: int = 5  # Temporary MFA challenge expiry
+    SECURE_COOKIES: bool = False           # Set True in production over HTTPS
+    
+    # Brute Force & Rate Limiting Controls
+    MAX_FAILED_LOGIN_ATTEMPTS: int = 5
+    ACCOUNT_LOCKOUT_MINUTES: int = 15
+    
+    # Argon2 Hashing Cost Controls
+    ARGON2_TIME_COST: int = 2
+    ARGON2_MEMORY_COST: int = 19456
+    ARGON2_PARALLELISM: int = 1
+    TESTING: bool = False
+    
+    # Privacy & Data Retention
+    LOCATION_RETENTION_HOURS: int = 24
     
     # Database: Defaults to local SQLite fallback if DATABASE_URL is not set
     DATABASE_URL: str = "sqlite:///./shaktishield.db"
@@ -42,9 +59,11 @@ class Settings(BaseSettings):
     def normalized_database_url(self) -> str:
         """
         Normalizes PostgreSQL connection strings for SQLAlchemy + psycopg2 driver.
-        Handles Supabase formats (postgres://, postgresql://, or postgresql+psycopg2://),
-        while safely preserving sqlite:/// as a local development/testing fallback.
+        Ensures test environments (pytest or TESTING flag) strictly use isolated SQLite
+        to prevent accidental connection, drop, or mutation of production database records.
         """
+        if self.TESTING or os.getenv("TESTING") == "True" or "pytest" in sys.modules:
+            return "sqlite:///./test_shaktishield.db"
         url = (self.DATABASE_URL or "").strip()
         if not url:
             return "sqlite:///./shaktishield.db"

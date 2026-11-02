@@ -1,20 +1,34 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.core.security import get_current_user
 from app.database.session import get_db
+from app.models.user import User
 from app.models.incident import SOSIncident
 from app.schemas.integrity import IntegrityVerificationRequest, IntegrityVerificationResponse
 from app.services.integrity_service import IntegrityService
 
 router = APIRouter(prefix="/integrity", tags=["Cryptographic Data Integrity"])
 
+def check_incident_access(incident: SOSIncident, current_user: User):
+    """Enforce authorization: only the incident owner or approved admin can inspect integrity details."""
+    is_owner = (incident.user_id == current_user.id)
+    is_approved_admin = (current_user.role == "admin" and current_user.approval_status == "APPROVED")
+    if not (is_owner or is_approved_admin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: You are not authorized to view or verify this incident's cryptographic telemetry."
+        )
+
 @router.get("/{incident_code}", response_model=IntegrityVerificationResponse)
 def get_incident_integrity(
     incident_code: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     Cryptographically verify the integrity of an SOS incident record.
+    Requires authentication. Access is strictly restricted to incident owner or authorized administrators.
     Recomputes SHA-256 hash from canonical database values and compares against stored digest.
     """
     incident = db.query(SOSIncident).filter(
@@ -26,6 +40,8 @@ def get_incident_integrity(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Incident record not found."
         )
+
+    check_incident_access(incident, current_user)
 
     verification = IntegrityService.verify_integrity(
         stored_hash=incident.integrity_hash,
@@ -52,10 +68,12 @@ def get_incident_integrity(
 @router.post("/verify", response_model=IntegrityVerificationResponse)
 def verify_arbitrary_record(
     req: IntegrityVerificationRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     Verify integrity or simulate tampering detection.
+    Requires authentication and incident authorization.
     Pass `tampered_data_test` to verify that changing any coordinate or status immediately causes a cryptographic mismatch.
     """
     incident = db.query(SOSIncident).filter(
@@ -67,6 +85,8 @@ def verify_arbitrary_record(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Incident record not found."
         )
+
+    check_incident_access(incident, current_user)
 
     # Use simulated tampered data if provided by caller for testing
     lat = incident.latitude

@@ -11,13 +11,30 @@ export interface User {
   blood_type?: string | null;
   emergency_notes?: string | null;
   is_active: boolean;
+  mfa_enabled?: boolean;
   created_at: string;
 }
 
 export interface AuthResponse {
   access_token: string;
+  refresh_token?: string;
   token_type: string;
+  expires_in?: number;
   user: User;
+  mfa_required?: boolean;
+  mfa_token?: string;
+}
+
+export interface AdminMFARequiredResponse {
+  mfa_required: boolean;
+  mfa_token: string;
+  message: string;
+}
+
+export interface AdminMFASetupResponse {
+  secret: string;
+  otpauth_url: string;
+  backup_code: string;
 }
 
 export interface AdminInvitation {

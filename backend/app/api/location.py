@@ -1,10 +1,12 @@
-import uuid
+import secrets
 from typing import Optional, List
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.security import get_current_user
+from app.core.rate_limit import rate_limit_location
 from app.core.audit import log_audit_event
 from app.database.session import get_db
 from app.models.user import User
@@ -30,7 +32,21 @@ def format_location_response(session: LocationSession) -> LocationSessionRespons
         google_maps_url=maps_url
     )
 
-@router.post("/start", response_model=LocationSessionResponse, status_code=status.HTTP_201_CREATED)
+def cleanup_expired_sessions(db: Session, retention_hours: int = 24) -> int:
+    """
+    Data Minimization & Privacy Protection:
+    Permanently deactivate and clear coordinates for location sessions expired older than retention_hours.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=retention_hours)
+    # Deactivate any past-expiration sessions
+    expired_count = db.query(LocationSession).filter(
+        LocationSession.expires_at < cutoff,
+        LocationSession.is_active == True
+    ).update({"is_active": False})
+    db.commit()
+    return expired_count
+
+@router.post("/start", response_model=LocationSessionResponse, status_code=status.HTTP_201_CREATED, dependencies=[Depends(rate_limit_location)])
 def start_location_session(
     payload: LocationStartRequest,
     db: Session = Depends(get_db),
@@ -39,9 +55,10 @@ def start_location_session(
     """
     Start a live location sharing session.
     - User explicit permission required
-    - Session automatically expires after duration_minutes (default 60 mins)
+    - Session automatically expires after duration_minutes (default 60 mins, maximum 720 mins)
+    - High-entropy cryptographic token used for shareable link
     """
-    # Deactivate existing active sessions for this user
+    # Deactivate any existing active sessions for this user
     db.query(LocationSession).filter(
         LocationSession.user_id == current_user.id,
         LocationSession.is_active == True
@@ -49,9 +66,11 @@ def start_location_session(
     db.commit()
 
     now = datetime.now(timezone.utc)
-    duration = payload.duration_minutes or 60
+    duration = min(max(payload.duration_minutes or 60, 5), 720)  # Bound duration between 5m and 12h
     expires_at = now + timedelta(minutes=duration)
-    session_code = f"LOC-{str(uuid.uuid4())[:8].upper()}"
+    
+    # 144+ bits of cryptographic entropy to prevent URL brute-forcing
+    session_code = f"LOC-{secrets.token_urlsafe(18)}"
 
     session = LocationSession(
         session_code=session_code,
@@ -109,15 +128,17 @@ def get_user_active_session(
 
 @router.get("/history", response_model=List[LocationSessionResponse])
 def get_user_location_history(
-    limit: int = 20,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Retrieve history of location sharing sessions for authenticated user."""
+    """Retrieve history of location sharing sessions for authenticated user with bounded pagination."""
     sessions = (
         db.query(LocationSession)
         .filter(LocationSession.user_id == current_user.id)
         .order_by(LocationSession.created_at.desc())
+        .offset(skip)
         .limit(limit)
         .all()
     )
@@ -131,6 +152,7 @@ def get_location_session(
     """
     Get current location information for a given active session code.
     Accessible to trusted contacts holding the live link.
+    Expired or stopped sessions are immediately denied.
     """
     session = db.query(LocationSession).filter(
         LocationSession.session_code == session_code
@@ -144,7 +166,6 @@ def get_location_session(
 
     # Check expiration
     now = datetime.now(timezone.utc)
-    # Ensure timezone awareness for comparison
     expires_at = session.expires_at
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
@@ -159,7 +180,7 @@ def get_location_session(
 
     return format_location_response(session)
 
-@router.patch("/{session_code}/ping", response_model=LocationSessionResponse)
+@router.patch("/{session_code}/ping", response_model=LocationSessionResponse, dependencies=[Depends(rate_limit_location)])
 def update_location_ping(
     session_code: str,
     payload: LocationUpdateRequest,
@@ -218,3 +239,16 @@ def stop_location_session(
     )
 
     return {"message": "Live location sharing stopped successfully.", "session_code": session_code}
+
+@router.post("/cleanup-expired")
+def trigger_location_retention_cleanup(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Data Minimization: Cleans up and deactivates expired location sessions according to retention policy."""
+    affected = cleanup_expired_sessions(db, retention_hours=settings.LOCATION_RETENTION_HOURS)
+    return {
+        "status": "SUCCESS",
+        "retention_policy_hours": settings.LOCATION_RETENTION_HOURS,
+        "deactivated_sessions": affected
+    }

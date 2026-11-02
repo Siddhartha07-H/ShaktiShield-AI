@@ -1,6 +1,6 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.security import get_current_admin, generate_invitation_code, hash_invitation_code
@@ -67,9 +67,9 @@ def get_admin_dashboard_metrics(
 
 @router.get("/users", response_model=List[UserResponse])
 def list_registered_users(
-    skip: int = 0,
-    limit: int = 50,
-    role_filter: str = None,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    role_filter: Optional[str] = None,
     db: Session = Depends(get_db),
     admin: User = Depends(get_current_admin)
 ):
@@ -219,9 +219,9 @@ def list_admin_invitations(
 
 @router.get("/incidents", response_model=List[IncidentResponse])
 def list_all_incidents(
-    status_filter: str = None,
-    skip: int = 0,
-    limit: int = 50,
+    status_filter: Optional[str] = None,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
     db: Session = Depends(get_db),
     admin: User = Depends(get_current_admin)
 ):
@@ -278,8 +278,8 @@ def update_incident_status(
 
 @router.get("/audit-logs")
 def get_audit_trail(
-    skip: int = 0,
-    limit: int = 50,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
     db: Session = Depends(get_db),
     admin: User = Depends(get_current_admin)
 ):

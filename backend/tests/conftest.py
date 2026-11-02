@@ -1,5 +1,13 @@
 import os
 import sys
+
+# Ensure test sqlite db is configured BEFORE importing any application modules
+TEST_DATABASE_URL = "sqlite:///./test_shaktishield.db"
+os.environ["DATABASE_URL"] = TEST_DATABASE_URL
+os.environ["DEMO_MODE"] = "True"
+os.environ["JWT_SECRET"] = "test-secret-key-for-pytest-safety-verification-2026"
+os.environ["TESTING"] = "True"
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -8,15 +16,17 @@ from sqlalchemy.orm import sessionmaker
 # Add backend directory to sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app.database.session import Base, get_db
+from app.database.session import Base, get_db, engine
 from app.main import app, init_db_and_seed
 from app.core.security import hash_password
-from app.core.rate_limit import login_limiter, register_limiter, sos_limiter
+from app.core.rate_limit import (
+    login_limiter, admin_login_limiter, register_limiter,
+    sos_limiter, refresh_limiter, location_limiter,
+    ai_limiter, password_reset_limiter
+)
 from app.models.user import User
 
-# Use an in-memory or dedicated test sqlite db
-TEST_DATABASE_URL = "sqlite:///./test_shaktishield.db"
-test_engine = create_engine(TEST_DATABASE_URL, connect_args={"check_same_thread": False})
+test_engine = engine
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
 
 @pytest.fixture(scope="session", autouse=True)
@@ -45,8 +55,13 @@ def setup_test_db():
 def reset_rate_limiters():
     """Clear in-memory rate limit records between individual tests so test runs don't collide."""
     login_limiter.client_records.clear()
+    admin_login_limiter.client_records.clear()
     register_limiter.client_records.clear()
     sos_limiter.client_records.clear()
+    refresh_limiter.client_records.clear()
+    location_limiter.client_records.clear()
+    ai_limiter.client_records.clear()
+    password_reset_limiter.client_records.clear()
     yield
 
 @pytest.fixture

@@ -50,14 +50,38 @@ class UserResponse(BaseModel):
     blood_type: Optional[str] = None
     emergency_notes: Optional[str] = None
     is_active: bool
+    mfa_enabled: bool = False
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
 
 class TokenResponse(BaseModel):
     access_token: str
+    refresh_token: Optional[str] = None
     token_type: str = "bearer"
+    expires_in: int = 900
     user: UserResponse
+
+class TokenRefreshRequest(BaseModel):
+    refresh_token: Optional[str] = None
+
+class AdminMFARequiredResponse(BaseModel):
+    mfa_required: bool = True
+    mfa_token: str
+    message: str = "Multi-factor authentication code required to complete administrator sign-in."
+
+class AdminMFAVerifyRequest(BaseModel):
+    mfa_token: str
+    totp_code: str = Field(..., min_length=6, max_length=12, description="6-digit TOTP verification code or backup code")
+
+class AdminMFASetupResponse(BaseModel):
+    secret: str
+    otpauth_url: str
+    backup_code: str
+
+class AdminMFAEnableRequest(BaseModel):
+    secret: str
+    totp_code: str
 
 class PasswordResetRequest(BaseModel):
     email: EmailStr

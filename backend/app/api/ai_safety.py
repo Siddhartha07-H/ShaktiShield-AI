@@ -1,4 +1,5 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from app.core.rate_limit import rate_limit_ai
 from app.schemas.ai import (
     RiskAssessmentRequest, RiskAssessmentResponse,
     RecommendationRequest, RecommendationResponse
@@ -7,7 +8,7 @@ from app.services.ai_service import AISafetyService
 
 router = APIRouter(prefix="/ai", tags=["AI Safety & Risk Assessment"])
 
-@router.post("/risk-assessment", response_model=RiskAssessmentResponse)
+@router.post("/risk-assessment", response_model=RiskAssessmentResponse, dependencies=[Depends(rate_limit_ai)])
 def assess_safety_risk(request: RiskAssessmentRequest):
     """
     AI Safety Risk Assessment Engine.
@@ -17,7 +18,7 @@ def assess_safety_risk(request: RiskAssessmentRequest):
     """
     return AISafetyService.evaluate_risk(request)
 
-@router.post("/recommendations", response_model=RecommendationResponse)
+@router.post("/recommendations", response_model=RecommendationResponse, dependencies=[Depends(rate_limit_ai)])
 def get_safety_recommendations(request: RecommendationRequest):
     """
     Returns structured safety guidelines and official Indian emergency contacts

@@ -1,8 +1,11 @@
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.config import settings
 from app.core.security import hash_password, hash_invitation_code
@@ -12,8 +15,12 @@ from app.models.user import User
 from app.models.contact import TrustedContact
 from app.models.incident import SOSIncident
 from app.models.admin_invite import AdminInvitationCode
+from app.models.token import RefreshToken, RevokedToken
 from app.services.integrity_service import IntegrityService
 from app.services.blockchain_service import BlockchainService
+
+logger = logging.getLogger("shaktishield")
+logging.basicConfig(level=logging.INFO)
 
 def init_db_and_seed():
     """Create tables and seed initial administrator and demo safety profiles."""
@@ -141,14 +148,64 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS Middleware
+# Extract approved origins for strict CORS
+APPROVED_ORIGINS = [
+    origin.strip() for origin in settings.BACKEND_CORS_ORIGINS
+    if not origin.strip().startswith("https://*")
+]
+
+# Strict CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Permits local dev and preview deployments
+    allow_origins=APPROVED_ORIGINS,
+    allow_origin_regex=r"^https://[a-zA-Z0-9\-]+\.vercel\.app$",
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With"],
 )
+
+# Security Headers & Request Size Limiting Middleware
+MAX_REQUEST_BYTES = 2 * 1024 * 1024  # 2MB maximum payload size
+
+@app.middleware("http")
+async def security_and_limit_middleware(request: Request, call_next):
+    # Enforce request payload size limits on mutating requests
+    if request.method in ["POST", "PUT", "PATCH"]:
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > MAX_REQUEST_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={"detail": "Payload too large. Maximum allowed request size is 2MB."}
+            )
+
+    response = await call_next(request)
+
+    # Secure HTTP Headers (OWASP recommended defense-in-depth)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "geolocation=(self), camera=(), microphone=()"
+    response.headers["X-XSS-Protection"] = "0"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: https:; "
+        "connect-src 'self' https:; "
+        "font-src 'self' data:;"
+    )
+
+    return response
+
+# Safe global error handler to prevent stack trace or credential leakage
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.exception(f"Unhandled error during {request.method} {request.url.path}: {exc}")
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": "An internal server error occurred. Please contact security compliance if the issue persists."}
+    )
 
 # Mount API Routers
 app.include_router(api_router, prefix=settings.API_V1_STR)

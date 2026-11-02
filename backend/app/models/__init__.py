@@ -5,6 +5,7 @@ from app.models.location import LocationSession
 from app.models.audit import AuditLog
 from app.models.notification import Notification
 from app.models.admin_invite import AdminInvitationCode
+from app.models.token import RefreshToken, RevokedToken
 
 __all__ = [
     "User",
@@ -14,4 +15,6 @@ __all__ = [
     "AuditLog",
     "Notification",
     "AdminInvitationCode",
+    "RefreshToken",
+    "RevokedToken",
 ]
