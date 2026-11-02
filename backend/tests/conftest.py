@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from app.database.session import Base, get_db
 from app.main import app, init_db_and_seed
 from app.core.security import hash_password
+from app.core.rate_limit import login_limiter, register_limiter, sos_limiter
 from app.models.user import User
 
 # Use an in-memory or dedicated test sqlite db
@@ -39,6 +40,14 @@ def setup_test_db():
             os.remove("./test_shaktishield.db")
         except Exception:
             pass
+
+@pytest.fixture(autouse=True)
+def reset_rate_limiters():
+    """Clear in-memory rate limit records between individual tests so test runs don't collide."""
+    login_limiter.client_records.clear()
+    register_limiter.client_records.clear()
+    sos_limiter.client_records.clear()
+    yield
 
 @pytest.fixture
 def client():
@@ -71,24 +80,27 @@ def admin_headers(client):
     email = "testadmin@shaktishield.ai"
     password = "AdminSecret123!"
 
-    resp = client.post("/api/auth/login", json={"email": email, "password": password})
+    resp = client.post("/api/auth/admin/login", json={"email": email, "password": password})
     if resp.status_code == 200:
         token = resp.json()["access_token"]
         return {"Authorization": f"Bearer {token}"}
 
-    # Register admin directly via DB to ensure role='admin'
+    # Register admin directly via DB to ensure role='admin' and approval_status='APPROVED'
     db = TestingSessionLocal()
     admin_user = User(
         email=email,
         hashed_password=hash_password(password),
         full_name="Platform Admin",
         role="admin",
+        approval_status="APPROVED",
+        organization_name="Platform Safety Commission",
+        authorization_reference="AUTH-TEST-ADMIN",
         is_active=True
     )
     db.add(admin_user)
     db.commit()
     db.close()
 
-    login_resp = client.post("/api/auth/login", json={"email": email, "password": password})
+    login_resp = client.post("/api/auth/admin/login", json={"email": email, "password": password})
     token = login_resp.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}

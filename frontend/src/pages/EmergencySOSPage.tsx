@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { 
   AlertTriangle, 
   MapPin, 
@@ -8,14 +9,20 @@ import {
   PhoneCall, 
   Loader2, 
   Lock, 
-  ExternalLink,
-  Volume2,
-  FileCheck
+  ExternalLink, 
+  Volume2, 
+  FileCheck,
+  RotateCcw,
+  Navigation,
+  Clock,
+  ShieldCheck,
+  AlertCircle
 } from 'lucide-react';
 import { api } from '../services/api';
 import { useToast } from '../context/ToastContext';
 import { SOSIncident } from '../types';
 import { Modal } from '../components/Modal';
+import { StatusBadge } from '../components/StatusBadge';
 
 export const EmergencySOSPage: React.FC = () => {
   const { showToast } = useToast();
@@ -29,13 +36,17 @@ export const EmergencySOSPage: React.FC = () => {
   const [isTriggering, setIsTriggering] = useState(false);
   const [activeIncident, setActiveIncident] = useState<SOSIncident | null>(null);
 
-  // Cancel dialog
+  // Accidental protection state: 3-second countdown mode
+  const [isArming, setIsArming] = useState(false);
+  const [countdown, setCountdown] = useState(3);
+
+  // Cancel modal
   const [isCancelModalOpen, setIsCancelModalOpen] = useState(false);
-  const [cancelReason, setCancelReason] = useState('Accidental trigger - safe');
+  const [cancelReason, setCancelReason] = useState('Accidental trigger - user safe');
   const [isCancelling, setIsCancelling] = useState(false);
 
-  // Request browser geolocation on page load
-  useEffect(() => {
+  // Acquire GPS on page mount
+  const requestLocation = () => {
     if ('geolocation' in navigator) {
       setGeoStatus('acquiring');
       navigator.geolocation.getCurrentPosition(
@@ -51,21 +62,51 @@ export const EmergencySOSPage: React.FC = () => {
           console.warn('Geolocation denied or unavailable:', err.message);
           setGeoStatus('denied');
         },
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
       );
     } else {
       setGeoStatus('denied');
     }
+  };
+
+  useEffect(() => {
+    requestLocation();
   }, []);
 
-  const handleTriggerSOS = async () => {
+  // Handle countdown trigger
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    if (isArming && countdown > 0) {
+      timer = setTimeout(() => {
+        setCountdown((prev) => prev - 1);
+      }, 1000);
+    } else if (isArming && countdown === 0) {
+      setIsArming(false);
+      setCountdown(3);
+      executeTrigger();
+    }
+    return () => clearTimeout(timer);
+  }, [isArming, countdown]);
+
+  const startCountdown = () => {
+    setIsArming(true);
+    setCountdown(3);
+  };
+
+  const abortCountdown = () => {
+    setIsArming(false);
+    setCountdown(3);
+    showToast('SOS countdown cancelled. Accidental trigger prevented.', 'info');
+  };
+
+  const executeTrigger = async () => {
     setIsTriggering(true);
     try {
       const payload = {
         latitude: coords.latitude,
         longitude: coords.longitude,
         accuracy: coords.accuracy,
-        description: 'Emergency SOS manual alert triggered by user.',
+        description: 'Emergency SOS alert triggered by user.',
         trigger_type: 'MANUAL_BUTTON',
       };
 
@@ -73,7 +114,7 @@ export const EmergencySOSPage: React.FC = () => {
       setActiveIncident(res);
       showToast(`EMERGENCY SOS LOGGED: Incident ${res.incident_code}`, 'error');
     } catch (err: any) {
-      showToast(err.message || 'Failed to trigger SOS.', 'error');
+      showToast(err.message || 'Failed to trigger SOS alert.', 'error');
     } finally {
       setIsTriggering(false);
     }
@@ -96,214 +137,229 @@ export const EmergencySOSPage: React.FC = () => {
     }
   };
 
+  const getAccuracyBadge = (accuracy: number | null) => {
+    if (accuracy === null) return null;
+    if (accuracy <= 15) {
+      return <span className="text-emerald-400 font-bold">High Precision (&plusmn;{accuracy.toFixed(0)}m)</span>;
+    }
+    if (accuracy <= 50) {
+      return <span className="text-amber-400 font-bold">Moderate Precision (&plusmn;{accuracy.toFixed(0)}m)</span>;
+    }
+    return <span className="text-red-400 font-bold">Low Precision (&plusmn;{accuracy.toFixed(0)}m)</span>;
+  };
+
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-8">
-      {/* Top Banner */}
-      <div className="p-4 rounded-2xl bg-red-950/40 border border-red-500/40 text-center space-y-1">
-        <div className="flex items-center justify-center gap-2 text-red-400 font-bold text-sm">
-          <ShieldAlert className="w-5 h-5 animate-pulse" />
-          <span>SHAKTISHIELD RAPID EMERGENCY CONSOLE</span>
+      
+      {/* Critical Disclaimer Alert */}
+      <div className="p-4 rounded-2xl bg-gradient-to-r from-red-950/70 via-slate-900 to-red-950/70 border border-red-500/40 text-xs flex flex-col sm:flex-row items-center justify-between gap-3 text-center sm:text-left">
+        <div className="flex items-center gap-2.5 text-red-200">
+          <ShieldAlert className="w-5 h-5 text-red-400 shrink-0" />
+          <span>
+            <strong>IN DANGER RIGHT NOW?</strong> Dial India Emergency Service <strong>112</strong> immediately. ShaktiShield AI supplements response with cryptographic incident logs.
+          </span>
         </div>
-        <p className="text-xs text-slate-300">
-          In life-threatening danger, dial <strong className="text-white">112</strong> on your phone immediately.
-        </p>
+        <a
+          href="tel:112"
+          className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white font-black text-xs shrink-0 flex items-center gap-1.5 shadow-sm transition-all"
+        >
+          <PhoneCall className="w-3.5 h-3.5" /> Call 112
+        </a>
       </div>
 
-      {/* Main SOS Trigger Hub */}
-      <div className="glass-panel p-8 sm:p-12 rounded-3xl border border-red-500/30 text-center space-y-8 relative overflow-hidden shadow-glow-crimson">
-        {/* Geolocation status indicator */}
-        <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-900/90 border border-slate-700 text-xs">
-          <MapPin
-            className={`w-4 h-4 ${
-              geoStatus === 'locked' ? 'text-emerald-400' : geoStatus === 'acquiring' ? 'text-amber-400 animate-spin' : 'text-slate-400'
-            }`}
-          />
-          {geoStatus === 'locked' ? (
-            <span className="text-emerald-300 font-medium">
-              GPS Locked: {coords.latitude?.toFixed(4)}, {coords.longitude?.toFixed(4)} (±{Math.round(coords.accuracy || 0)}m)
-            </span>
-          ) : geoStatus === 'acquiring' ? (
-            <span className="text-amber-300">Acquiring high-precision GPS satellites...</span>
-          ) : (
-            <span className="text-slate-400">GPS unavailable or denied (Will record timestamp only)</span>
+      {/* Main SOS Trigger Console */}
+      <div className="glass-panel p-6 sm:p-12 rounded-3xl border border-red-500/30 text-center relative overflow-hidden shadow-2xl">
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-80 h-80 bg-red-600/15 rounded-full blur-3xl pointer-events-none" />
+
+        <div className="max-w-md mx-auto space-y-3 mb-8">
+          <h1 className="text-3xl sm:text-4xl font-black text-white tracking-tight">
+            Emergency SOS Console
+          </h1>
+          <p className="text-xs sm:text-sm text-slate-300">
+            Press and confirm to generate a cryptographically hashed emergency record with live GPS coordinates.
+          </p>
+        </div>
+
+        {/* GPS Geolocation Status Indicator */}
+        <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-slate-900/90 border border-purple-500/30 text-xs text-slate-300 mb-8">
+          <Navigation className={`w-3.5 h-3.5 ${geoStatus === 'locked' ? 'text-emerald-400' : 'text-amber-400 animate-spin'}`} />
+          {geoStatus === 'locked' && (
+            <span>GPS Locked: {coords.latitude?.toFixed(4)}, {coords.longitude?.toFixed(4)} ({getAccuracyBadge(coords.accuracy)})</span>
+          )}
+          {geoStatus === 'acquiring' && <span>Acquiring satellite GPS fix...</span>}
+          {geoStatus === 'denied' && (
+            <span className="text-amber-300">Location permission denied (Coordinates will be simulated)</span>
           )}
         </div>
 
-        {/* The Massive Pulsating Trigger Button */}
-        <div>
-          {activeIncident && activeIncident.status === 'ACTIVE' ? (
+        {/* The Big SOS Button */}
+        <div className="py-6 flex flex-col items-center justify-center">
+          {isArming ? (
+            /* Countdown cancel view */
             <div className="space-y-4">
-              <div className="w-52 h-52 sm:w-64 sm:h-64 mx-auto rounded-full bg-red-600/30 border-8 border-red-500 animate-pulse flex flex-col items-center justify-center p-4">
-                <AlertTriangle className="w-16 h-16 text-red-400 mb-2 animate-bounce" />
-                <span className="text-xl sm:text-2xl font-black text-white">ALERT ACTIVE</span>
-                <span className="text-xs font-mono text-red-200 mt-1">{activeIncident.incident_code}</span>
+              <div className="w-48 h-48 sm:w-56 sm:h-56 rounded-full bg-gradient-to-b from-red-600 to-rose-900 border-4 border-white flex flex-col items-center justify-center text-white shadow-glow-crimson animate-pulse mx-auto">
+                <span className="text-6xl sm:text-7xl font-black">{countdown}</span>
+                <span className="text-xs uppercase font-bold tracking-widest mt-1 text-red-200">
+                  Arming SOS...
+                </span>
               </div>
-              <p className="text-sm font-semibold text-red-300">
-                Emergency protocol initiated. Cryptographic evidence logged in database.
-              </p>
-              <div className="flex items-center justify-center gap-3">
+              <div>
                 <button
-                  onClick={() => setIsCancelModalOpen(true)}
-                  className="px-6 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition-colors"
+                  onClick={abortCountdown}
+                  className="px-6 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs border border-slate-600 transition-colors inline-flex items-center gap-2"
                 >
-                  I Am Safe (Cancel Alert)
+                  <RotateCcw className="w-4 h-4" />
+                  <span>Cancel / False Alarm</span>
                 </button>
-                <a
-                  href="tel:112"
-                  className="px-6 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold flex items-center gap-2 shadow-lg"
-                >
-                  <PhoneCall className="w-4 h-4" />
-                  <span>Call 112 Dispatch</span>
-                </a>
               </div>
             </div>
           ) : (
-            <div className="space-y-6">
+            /* Standard Launch Button */
+            <div className="space-y-4">
               <button
-                onClick={handleTriggerSOS}
+                type="button"
+                onClick={startCountdown}
                 disabled={isTriggering}
-                className="w-52 h-52 sm:w-64 sm:h-64 rounded-full bg-gradient-to-b from-red-500 via-red-600 to-rose-700 hover:from-red-600 hover:to-rose-800 text-white shadow-glow-crimson transition-all duration-300 transform hover:scale-105 active:scale-95 border-8 border-red-400/50 group mx-auto flex flex-col items-center justify-center p-4 relative"
+                className="w-48 h-48 sm:w-56 sm:h-56 rounded-full bg-gradient-to-b from-red-500 via-red-600 to-rose-800 hover:from-red-600 hover:to-rose-900 text-white shadow-glow-crimson flex flex-col items-center justify-center gap-1 group transform hover:scale-105 active:scale-95 transition-all duration-300 border-4 border-red-400/50 mx-auto"
               >
                 {isTriggering ? (
                   <>
-                    <Loader2 className="w-16 h-16 animate-spin text-white mb-2" />
-                    <span className="text-lg font-bold">TRIGGERING...</span>
+                    <Loader2 className="w-12 h-12 animate-spin text-white" />
+                    <span className="text-xs font-bold tracking-wider mt-2">Logging SOS...</span>
                   </>
                 ) : (
                   <>
-                    <AlertTriangle className="w-16 h-16 text-white mb-2 group-hover:scale-110 transition-transform animate-pulse" />
-                    <span className="text-3xl sm:text-4xl font-black tracking-wider">TAP SOS</span>
-                    <span className="text-[11px] font-bold uppercase tracking-widest text-red-100 mt-1">
-                      Immediate Alert
+                    <AlertTriangle className="w-16 h-16 text-white group-hover:scale-110 transition-transform animate-bounce" />
+                    <span className="text-3xl sm:text-4xl font-black tracking-wider">SOS</span>
+                    <span className="text-[11px] font-semibold uppercase tracking-widest text-red-200">
+                      Tap (3s Countdown)
                     </span>
                   </>
                 )}
               </button>
 
-              <div className="max-w-md mx-auto space-y-1">
-                <p className="text-xs text-slate-300 font-medium">
-                  Triggering records your exact coordinates, generates a SHA-256 audit digest, and alerts trusted guardians.
-                </p>
-                <span className="text-[11px] text-slate-500 block">
-                  (Demo Mode: Event logged securely in system without automated telecom dispatch)
-                </span>
+              {/* Instant Trigger Bypass Option */}
+              <div>
+                <button
+                  type="button"
+                  onClick={executeTrigger}
+                  disabled={isTriggering}
+                  className="text-xs text-red-400 hover:text-red-300 font-semibold underline"
+                >
+                  Skip Countdown: Trigger Instant SOS
+                </button>
               </div>
             </div>
           )}
         </div>
 
-        {/* Active Incident Details Card */}
-        {activeIncident && (
-          <div className="p-6 rounded-2xl bg-slate-950/80 border border-purple-500/30 text-left space-y-3 text-xs">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+        {/* Accidental Protection Notice */}
+        <p className="text-[11px] text-slate-400 max-w-sm mx-auto mt-4 leading-relaxed">
+          Accidental trigger protection active. You have 3 seconds to abort if tapped unintentionally.
+        </p>
+      </div>
+
+      {/* Active Incident Details Card (If an incident was just triggered) */}
+      {activeIncident && (
+        <div className="glass-panel p-6 sm:p-8 rounded-3xl border border-red-500/40 space-y-4 animate-in slide-in-from-bottom-2">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-red-500/20 gap-2">
+            <div>
               <div className="flex items-center gap-2">
-                <FileCheck className="w-4 h-4 text-emerald-400" />
-                <span className="font-bold text-white">Cryptographic Incident Stamp</span>
+                <span className="text-sm font-bold text-white">ACTIVE INCIDENT RECORD:</span>
+                <span className="font-mono font-black text-amber-400 text-sm">{activeIncident.incident_code}</span>
               </div>
-              <span
-                className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                  activeIncident.status === 'ACTIVE'
-                    ? 'bg-red-950 text-red-300 border border-red-500/30'
-                    : 'bg-slate-800 text-slate-300'
-                }`}
-              >
-                Status: {activeIncident.status}
+              <span className="text-xs text-slate-400">
+                Created: {new Date(activeIncident.created_at).toLocaleString()}
               </span>
             </div>
+            <StatusBadge status={activeIncident.status} />
+          </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-slate-300">
-              <div>
-                <span className="text-slate-400 block">Incident Code:</span>
-                <span className="font-mono text-purple-300 font-bold">{activeIncident.incident_code}</span>
-              </div>
-              <div>
-                <span className="text-slate-400 block">Recorded Timestamp:</span>
-                <span>{new Date(activeIncident.created_at).toLocaleString()}</span>
-              </div>
-              <div className="sm:col-span-2">
-                <span className="text-slate-400 block">SHA-256 Record Integrity Hash:</span>
-                <span className="font-mono text-[11px] text-emerald-400 break-all select-all">
-                  {activeIncident.integrity_hash}
-                </span>
-              </div>
-              {activeIncident.blockchain_tx && (
-                <div className="sm:col-span-2">
-                  <span className="text-slate-400 block">Blockchain Anchor Receipt:</span>
-                  <span className="font-mono text-[11px] text-indigo-400 break-all">
-                    {activeIncident.blockchain_tx}
-                  </span>
-                </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+            <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800 space-y-1">
+              <span className="text-slate-400 block">GPS Coordinates:</span>
+              <span className="font-mono font-bold text-white">
+                {activeIncident.latitude && activeIncident.longitude
+                  ? `${activeIncident.latitude.toFixed(5)}, ${activeIncident.longitude.toFixed(5)}`
+                  : 'Coordinates pending satellite fix'}
+              </span>
+              {activeIncident.accuracy && (
+                <span className="text-[11px] text-slate-400 block">Accuracy: &plusmn;{activeIncident.accuracy.toFixed(1)}m</span>
               )}
             </div>
-          </div>
-        )}
-      </div>
 
-      {/* Immediate Emergency Action Checklist */}
-      <div className="glass-panel p-6 sm:p-8 rounded-3xl border border-purple-500/20 space-y-4 text-xs">
-        <h3 className="text-base font-bold text-white flex items-center gap-2">
-          <CheckCircle2 className="w-5 h-5 text-purple-400" />
-          <span>Immediate Danger Checklist</span>
-        </h3>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-slate-300">
-          <div className="p-3.5 rounded-xl bg-slate-900/60 border border-slate-800 flex items-start gap-2.5">
-            <span className="font-bold text-red-400 shrink-0">1.</span>
-            <span>Dial 112 on speakerphone immediately if being actively pursued.</span>
+            <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800 space-y-1">
+              <span className="text-slate-400 block">Cryptographic SHA-256 Digest:</span>
+              <span className="font-mono text-purple-300 text-[11px] break-all block">
+                {activeIncident.integrity_hash}
+              </span>
+            </div>
           </div>
-          <div className="p-3.5 rounded-xl bg-slate-900/60 border border-slate-800 flex items-start gap-2.5">
-            <span className="font-bold text-purple-400 shrink-0">2.</span>
-            <span>Move promptly into any lit commercial shop, fuel station, or hotel lobby.</span>
-          </div>
-          <div className="p-3.5 rounded-xl bg-slate-900/60 border border-slate-800 flex items-start gap-2.5">
-            <span className="font-bold text-purple-400 shrink-0">3.</span>
-            <span>Trigger ShaktiShield SOS to lock your coordinates and time record.</span>
-          </div>
-          <div className="p-3.5 rounded-xl bg-slate-900/60 border border-slate-800 flex items-start gap-2.5">
-            <span className="font-bold text-purple-400 shrink-0">4.</span>
-            <span>Make audible phone calls or attract civilian attention without hesitation.</span>
-          </div>
+
+          {activeIncident.status === 'ACTIVE' && (
+            <div className="pt-2 flex flex-col sm:flex-row items-center justify-between gap-3">
+              <button
+                onClick={() => setIsCancelModalOpen(true)}
+                className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs border border-slate-700 transition-colors"
+              >
+                Cancel SOS (Mark as Safe)
+              </button>
+
+              <Link
+                to="/history"
+                className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs shadow-glow-purple text-center transition-all"
+              >
+                View Incident in History & Ledger &rarr;
+              </Link>
+            </div>
+          )}
         </div>
-      </div>
+      )}
 
-      {/* Cancel Alert Modal */}
+      {/* Cancellation Modal with Mandatory Reason */}
       <Modal
         isOpen={isCancelModalOpen}
         onClose={() => setIsCancelModalOpen(false)}
-        title="Cancel Emergency Alert"
+        title="Cancel Emergency SOS Alert"
       >
         <div className="space-y-4 text-xs">
-          <p className="text-slate-300">
-            Please confirm that you are safe. A cancellation note will be cryptographically updated in the incident log for record transparency.
+          <p className="text-slate-300 leading-relaxed">
+            Please provide a cancellation reason. This will be cryptographically logged to the incident audit trail:
           </p>
 
           <div>
-            <label className="block text-slate-300 font-semibold mb-1">Reason for Cancellation</label>
-            <input
-              type="text"
+            <label className="block text-slate-400 mb-1 font-semibold">Cancellation Reason:</label>
+            <select
               value={cancelReason}
               onChange={(e) => setCancelReason(e.target.value)}
-              placeholder="e.g. Accidental click / Safe with family"
-              className="w-full p-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs focus:border-purple-500 focus:outline-none"
-            />
+              className="w-full p-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-purple-500"
+            >
+              <option value="Accidental trigger - user safe">Accidental trigger - user safe</option>
+              <option value="Situation de-escalated - safely resolved">Situation de-escalated - safely resolved</option>
+              <option value="Emergency resolved by family / bystander">Emergency resolved by family / bystander</option>
+              <option value="Testing platform emergency functionality">Testing platform emergency functionality</option>
+            </select>
           </div>
 
-          <div className="flex items-center justify-end gap-2 pt-2">
+          <div className="flex items-center justify-end gap-2.5 pt-4 border-t border-slate-800">
             <button
               onClick={() => setIsCancelModalOpen(false)}
-              className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 hover:bg-slate-700"
+              className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 font-semibold hover:bg-slate-700"
             >
-              Back
+              Keep SOS Active
             </button>
             <button
               onClick={handleCancelSOS}
               disabled={isCancelling}
-              className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold flex items-center gap-1.5"
+              className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold flex items-center gap-1.5 shadow-sm"
             >
-              {isCancelling ? 'Updating Hash...' : 'Confirm I Am Safe'}
+              {isCancelling && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+              <span>Confirm Safe & Cancel</span>
             </button>
           </div>
         </div>
       </Modal>
+
     </div>
   );
 };

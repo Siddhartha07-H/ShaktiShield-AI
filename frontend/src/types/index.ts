@@ -4,6 +4,10 @@ export interface User {
   full_name: string;
   phone?: string | null;
   role: 'user' | 'admin';
+  approval_status: 'APPROVED' | 'PENDING_APPROVAL' | 'REJECTED' | 'SUSPENDED';
+  organization_name?: string | null;
+  authorization_reference?: string | null;
+  approved_at?: string | null;
   blood_type?: string | null;
   emergency_notes?: string | null;
   is_active: boolean;
@@ -14,6 +18,25 @@ export interface AuthResponse {
   access_token: string;
   token_type: string;
   user: User;
+}
+
+export interface AdminInvitation {
+  id: number;
+  organization_name?: string | null;
+  expires_at: string;
+  is_used: boolean;
+  created_at: string;
+  invitation_code?: string | null;
+}
+
+export interface InAppNotification {
+  id: number;
+  user_id: number;
+  title: string;
+  message: string;
+  notification_type: string;
+  is_read: boolean;
+  created_at: string;
 }
 
 export interface TrustedContact {
@@ -108,6 +131,8 @@ export interface IntegrityReport {
 
 export interface AdminMetrics {
   total_users: number;
+  total_admins?: number;
+  pending_admins?: number;
   total_incidents: number;
   active_incidents: number;
   resolved_incidents: number;

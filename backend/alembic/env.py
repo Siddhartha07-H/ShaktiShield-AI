@@ -18,6 +18,8 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
+from sqlalchemy import create_engine
+
 def get_url():
     return settings.normalized_database_url
 
@@ -34,11 +36,14 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 def run_migrations_online() -> None:
-    configuration = config.get_section(config.config_ini_section) or {}
-    configuration["sqlalchemy.url"] = get_url()
-    connectable = engine_from_config(
-        configuration,
-        prefix="sqlalchemy.",
+    url = get_url()
+    connect_args = {}
+    if url.startswith("sqlite"):
+        connect_args["check_same_thread"] = False
+
+    connectable = create_engine(
+        url,
+        connect_args=connect_args,
         poolclass=pool.NullPool,
     )
 

@@ -8,12 +8,15 @@ import { DemoBanner } from './components/DemoBanner';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { AdminRoute } from './components/AdminRoute';
 
-// All 17 Pages
+// Pages
 import { HomePage } from './pages/HomePage';
 import { AboutPage } from './pages/AboutPage';
 import { FeaturesPage } from './pages/FeaturesPage';
 import { RegisterPage } from './pages/RegisterPage';
 import { LoginPage } from './pages/LoginPage';
+import { AdminLoginPage } from './pages/AdminLoginPage';
+import { AdminRegisterPage } from './pages/AdminRegisterPage';
+import { AdminPendingApprovalPage } from './pages/AdminPendingApprovalPage';
 import { ForgotPasswordPage } from './pages/ForgotPasswordPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { EmergencySOSPage } from './pages/EmergencySOSPage';
@@ -45,13 +48,16 @@ export const App: React.FC = () => {
           <Route path="/features" element={<FeaturesPage />} />
           <Route path="/register" element={<RegisterPage />} />
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/admin/login" element={<AdminLoginPage />} />
+          <Route path="/admin/register" element={<AdminRegisterPage />} />
+          <Route path="/admin/pending-approval" element={<AdminPendingApprovalPage />} />
           <Route path="/forgot-password" element={<ForgotPasswordPage />} />
           <Route path="/resources" element={<SafetyResourcesPage />} />
           <Route path="/privacy" element={<PrivacyPolicyPage />} />
           <Route path="/terms" element={<TermsPage />} />
           <Route path="/contact" element={<ContactPage />} />
 
-          {/* Quick SOS Trigger (Accessible directly or authenticated) */}
+          {/* Quick SOS Trigger */}
           <Route path="/sos" element={<EmergencySOSPage />} />
 
           {/* Protected User Pages */}

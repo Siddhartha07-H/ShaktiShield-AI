@@ -1,16 +1,19 @@
 from typing import List, Dict, Any
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.core.security import get_current_admin
+from app.core.security import get_current_admin, generate_invitation_code, hash_invitation_code
 from app.core.audit import log_audit_event
 from app.database.session import get_db
 from app.models.user import User
 from app.models.contact import TrustedContact
 from app.models.incident import SOSIncident
 from app.models.audit import AuditLog
-from app.schemas.user import UserResponse
+from app.models.admin_invite import AdminInvitationCode
+from app.schemas.user import (
+    UserResponse, AdminInvitationCreate, AdminInvitationResponse, AdminApprovalAction
+)
 from app.schemas.incident import IncidentResponse, SOSStatusUpdateRequest
 from app.services.integrity_service import IntegrityService
 
@@ -22,7 +25,9 @@ def get_admin_dashboard_metrics(
     admin: User = Depends(get_current_admin)
 ) -> Dict[str, Any]:
     """Retrieve platform-wide telemetry and safety metrics for administrative oversight."""
-    total_users = db.query(User).count()
+    total_users = db.query(User).filter(User.role == "user").count()
+    total_admins = db.query(User).filter(User.role == "admin", User.approval_status == "APPROVED").count()
+    pending_admins = db.query(User).filter(User.role == "admin", User.approval_status == "PENDING_APPROVAL").count()
     total_incidents = db.query(SOSIncident).count()
     active_incidents = db.query(SOSIncident).filter(SOSIncident.status == "ACTIVE").count()
     resolved_incidents = db.query(SOSIncident).filter(SOSIncident.status == "RESOLVED").count()
@@ -35,6 +40,8 @@ def get_admin_dashboard_metrics(
     return {
         "metrics": {
             "total_users": total_users,
+            "total_admins": total_admins,
+            "pending_admins": pending_admins,
             "total_incidents": total_incidents,
             "active_incidents": active_incidents,
             "resolved_incidents": resolved_incidents,
@@ -62,12 +69,153 @@ def get_admin_dashboard_metrics(
 def list_registered_users(
     skip: int = 0,
     limit: int = 50,
+    role_filter: str = None,
     db: Session = Depends(get_db),
     admin: User = Depends(get_current_admin)
 ):
     """List registered users with administrative details (sanitized, no password hashes)."""
-    users = db.query(User).order_by(User.id.desc()).offset(skip).limit(limit).all()
+    query = db.query(User)
+    if role_filter:
+        query = query.filter(User.role == role_filter.lower())
+    users = query.order_by(User.id.desc()).offset(skip).limit(limit).all()
     return [UserResponse.model_validate(u) for u in users]
+
+@router.get("/pending-admins", response_model=List[UserResponse])
+def list_pending_admin_applications(
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_current_admin)
+):
+    """List all administrator registrations awaiting manual verification and approval."""
+    pending = db.query(User).filter(
+        User.role == "admin",
+        User.approval_status == "PENDING_APPROVAL"
+    ).order_by(User.created_at.desc()).all()
+    return [UserResponse.model_validate(u) for u in pending]
+
+@router.post("/approve-admin/{target_user_id}", response_model=UserResponse)
+def approve_admin_application(
+    target_user_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_current_admin)
+):
+    """Approve a pending administrator application after reviewing authorization reference."""
+    target_user = db.query(User).filter(User.id == target_user_id, User.role == "admin").first()
+    if not target_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Administrator applicant record not found."
+        )
+
+    now = datetime.now(timezone.utc)
+    target_user.approval_status = "APPROVED"
+    target_user.approved_at = now
+    target_user.approved_by_id = admin.id
+
+    db.commit()
+    db.refresh(target_user)
+
+    log_audit_event(
+        db,
+        "ADMIN_APPROVAL_GRANTED",
+        f"Administrator {target_user.email} approved by admin {admin.email} (Org: {target_user.organization_name}, Ref: {target_user.authorization_reference})",
+        admin.id
+    )
+
+    return UserResponse.model_validate(target_user)
+
+@router.post("/reject-admin/{target_user_id}", response_model=UserResponse)
+def reject_admin_application(
+    target_user_id: int,
+    action: AdminApprovalAction,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_current_admin)
+):
+    """Reject an unverified administrator application."""
+    target_user = db.query(User).filter(User.id == target_user_id, User.role == "admin").first()
+    if not target_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Administrator applicant record not found."
+        )
+
+    target_user.approval_status = "REJECTED"
+    target_user.is_active = False
+
+    db.commit()
+    db.refresh(target_user)
+
+    reason = action.rejection_reason or "Authorization credentials could not be verified."
+    log_audit_event(
+        db,
+        "ADMIN_APPROVAL_REJECTED",
+        f"Administrator applicant {target_user.email} rejected by admin {admin.email}. Reason: {reason}",
+        admin.id
+    )
+
+    return UserResponse.model_validate(target_user)
+
+@router.post("/invitations", response_model=AdminInvitationResponse, status_code=status.HTTP_201_CREATED)
+def create_admin_invitation_code(
+    payload: AdminInvitationCreate,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_current_admin)
+):
+    """
+    Generate a secure, single-use administrator invitation code.
+    Only the SHA-256 digest is stored in the database.
+    The plain text code is returned ONLY ONCE in this response.
+    """
+    raw_code = generate_invitation_code()
+    code_digest = hash_invitation_code(raw_code)
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(hours=payload.expires_in_hours)
+
+    invitation = AdminInvitationCode(
+        code_hash=code_digest,
+        organization_name=payload.organization_name,
+        created_by_admin_id=admin.id,
+        expires_at=expires_at,
+        is_used=False
+    )
+    db.add(invitation)
+    db.commit()
+    db.refresh(invitation)
+
+    log_audit_event(
+        db,
+        "ADMIN_INVITATION_GENERATED",
+        f"Admin invitation token generated for org '{payload.organization_name}' by {admin.email}. Expires in {payload.expires_in_hours}h.",
+        admin.id
+    )
+
+    return AdminInvitationResponse(
+        id=invitation.id,
+        organization_name=invitation.organization_name,
+        expires_at=invitation.expires_at,
+        is_used=invitation.is_used,
+        created_at=invitation.created_at,
+        invitation_code=raw_code  # Only exposed upon generation!
+    )
+
+@router.get("/invitations", response_model=List[AdminInvitationResponse])
+def list_admin_invitations(
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_current_admin)
+):
+    """List issued admin invitations (hashes are kept hidden)."""
+    invitations = db.query(AdminInvitationCode).order_by(AdminInvitationCode.created_at.desc()).all()
+    # Ensure invitation_code is null in list view
+    return [
+        AdminInvitationResponse(
+            id=inv.id,
+            organization_name=inv.organization_name,
+            expires_at=inv.expires_at,
+            is_used=inv.is_used,
+            created_at=inv.created_at,
+            invitation_code=None
+        )
+        for inv in invitations
+    ]
 
 @router.get("/incidents", response_model=List[IncidentResponse])
 def list_all_incidents(
@@ -91,7 +239,7 @@ def update_incident_status(
     db: Session = Depends(get_db),
     admin: User = Depends(get_current_admin)
 ):
-    """Administrative status triage for an SOS incident (e.g. marking resolved or cancelled)."""
+    """Administrative status triage for an SOS incident."""
     incident = db.query(SOSIncident).filter(SOSIncident.id == incident_id).first()
     if not incident:
         raise HTTPException(

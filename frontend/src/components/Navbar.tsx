@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 
 export const Navbar: React.FC = () => {
-  const { user, isAuthenticated, isAdmin, logout } = useAuth();
+  const { user, isAuthenticated, isAdmin, isPendingAdmin, logout } = useAuth();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
@@ -129,6 +129,15 @@ export const Navbar: React.FC = () => {
                 >
                   <Lock className="w-3.5 h-3.5 text-amber-400" />
                   Admin
+                </Link>
+              )}
+              {isPendingAdmin && (
+                <Link
+                  to="/admin/pending-approval"
+                  className="px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 text-amber-300 bg-amber-950/60 border border-amber-500/40 animate-pulse text-xs font-semibold"
+                >
+                  <Lock className="w-3.5 h-3.5 text-amber-400" />
+                  Pending Approval
                 </Link>
               )}
             </>
@@ -281,6 +290,15 @@ export const Navbar: React.FC = () => {
                     className="block px-3 py-2 rounded-lg text-sm font-medium text-amber-300 bg-amber-950/40"
                   >
                     Admin Dashboard
+                  </Link>
+                )}
+                {isPendingAdmin && (
+                  <Link
+                    to="/admin/pending-approval"
+                    onClick={() => setIsMobileMenuOpen(false)}
+                    className="block px-3 py-2 rounded-lg text-sm font-medium text-amber-300 bg-amber-950/60 border border-amber-500/40 animate-pulse"
+                  >
+                    Pending Review
                   </Link>
                 )}
                 <button

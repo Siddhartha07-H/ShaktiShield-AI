@@ -13,8 +13,8 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24 hours
     
-    # Database: Defaults to local SQLite, but can be set to Supabase PostgreSQL via DATABASE_URL
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./shaktishield.db")
+    # Database: Defaults to local SQLite fallback if DATABASE_URL is not set
+    DATABASE_URL: str = "sqlite:///./shaktishield.db"
     
     # CORS
     BACKEND_CORS_ORIGINS: List[str] = [
@@ -32,14 +32,26 @@ class Settings(BaseSettings):
     EMAIL_PROVIDER_CONFIGURED: bool = False
     BLOCKCHAIN_NETWORK: str = "Polygon Amoy Testnet (Modular Ready)"
     
-    model_config = SettingsConfigDict(case_sensitive=True, env_file=".env", extra="allow")
+    model_config = SettingsConfigDict(
+        case_sensitive=True,
+        env_file=(".env", "backend/.env", "../.env"),
+        extra="allow"
+    )
 
     @property
     def normalized_database_url(self) -> str:
-        # Handles postgres:// to postgresql:// dialect conversion for modern SQLAlchemy/Supabase
-        url = self.DATABASE_URL
+        """
+        Normalizes PostgreSQL connection strings for SQLAlchemy + psycopg2 driver.
+        Handles Supabase formats (postgres://, postgresql://, or postgresql+psycopg2://),
+        while safely preserving sqlite:/// as a local development/testing fallback.
+        """
+        url = (self.DATABASE_URL or "").strip()
+        if not url:
+            return "sqlite:///./shaktishield.db"
         if url.startswith("postgres://"):
-            url = url.replace("postgres://", "postgresql://", 1)
+            url = url.replace("postgres://", "postgresql+psycopg2://", 1)
+        elif url.startswith("postgresql://") and not url.startswith("postgresql+"):
+            url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
         return url
 
 settings = Settings()

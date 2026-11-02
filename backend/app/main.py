@@ -1,21 +1,22 @@
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.core.config import settings
-from app.core.security import hash_password
+from app.core.security import hash_password, hash_invitation_code
 from app.database.session import engine, Base, SessionLocal
 from app.api import api_router
 from app.models.user import User
 from app.models.contact import TrustedContact
 from app.models.incident import SOSIncident
+from app.models.admin_invite import AdminInvitationCode
 from app.services.integrity_service import IntegrityService
 from app.services.blockchain_service import BlockchainService
 
 def init_db_and_seed():
-    """Create tables and seed initial demo accounts and safe sample data."""
+    """Create tables and seed initial administrator and demo safety profiles."""
     Base.metadata.create_all(bind=engine)
     
     db = SessionLocal()
@@ -29,6 +30,9 @@ def init_db_and_seed():
                 full_name="Chief Safety Officer (Admin)",
                 phone="+919876543210",
                 role="admin",
+                approval_status="APPROVED",
+                organization_name="National Emergency Safety Command",
+                authorization_reference="AUTH-GOV-DELHI-001",
                 blood_type="O+",
                 emergency_notes="Admin personnel with platform emergency response duties.",
                 is_active=True
@@ -45,6 +49,7 @@ def init_db_and_seed():
                 full_name="Aarohi Sharma",
                 phone="+919811223344",
                 role="user",
+                approval_status="APPROVED",
                 blood_type="B+",
                 emergency_notes="Asthma inhaler in purse. Contact elder sister first in emergencies.",
                 is_active=True
@@ -103,6 +108,20 @@ def init_db_and_seed():
                 updated_at=now
             )
             db.add(sample_incident)
+            db.commit()
+
+        # Seed initial bootstrap admin invitation code if none exist
+        inv_count = db.query(AdminInvitationCode).count()
+        if inv_count == 0:
+            bootstrap_code = "SHAKTI-ADM-BOOTSTRAP2026"
+            bootstrap_inv = AdminInvitationCode(
+                code_hash=hash_invitation_code(bootstrap_code),
+                organization_name="National Women Safety Commission",
+                created_by_admin_id=admin.id if admin else None,
+                expires_at=datetime.now(timezone.utc) + timedelta(days=90),
+                is_used=False
+            )
+            db.add(bootstrap_inv)
             db.commit()
 
     finally:

@@ -3,14 +3,23 @@ import { User, AuthResponse } from '../types';
 import { api } from '../services/api';
 import { useToast } from './ToastContext';
 
+interface AdminAuthResult {
+  success: boolean;
+  isPending?: boolean;
+  error?: string;
+}
+
 interface AuthContextType {
   user: User | null;
   token: string | null;
   isAuthenticated: boolean;
   isAdmin: boolean;
+  isPendingAdmin: boolean;
   isLoading: boolean;
-  login: (credentials: { email: string; password: string }) => Promise<boolean>;
+  login: (credentials: { email: string; password: string; remember_me?: boolean }) => Promise<{ success: boolean; role?: string; isPending?: boolean; error?: string }>;
+  adminLogin: (credentials: { email: string; password: string }) => Promise<AdminAuthResult>;
   register: (data: any) => Promise<boolean>;
+  adminRegister: (data: any) => Promise<AdminAuthResult>;
   logout: () => void;
   updateProfile: (data: any) => Promise<boolean>;
   refreshUser: () => Promise<void>;
@@ -49,18 +58,44 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     fetchCurrentUser();
   }, [fetchCurrentUser]);
 
-  const login = async (credentials: { email: string; password: string }): Promise<boolean> => {
+  const login = async (credentials: { email: string; password: string; remember_me?: boolean }): Promise<{ success: boolean; role?: string; isPending?: boolean; error?: string }> => {
     try {
       setIsLoading(true);
       const res = await api.post<AuthResponse>('/api/auth/login', credentials);
       localStorage.setItem('shaktishield_token', res.access_token);
       setToken(res.access_token);
       setUser(res.user);
+      const isPending = res.user.role === 'admin' && res.user.approval_status === 'PENDING_APPROVAL';
       showToast(`Welcome back, ${res.user.full_name}!`, 'success');
-      return true;
+      return { success: true, role: res.user.role, isPending };
     } catch (error: any) {
-      showToast(error.message || 'Login failed. Please check credentials.', 'error');
-      return false;
+      const msg = error.message || 'Login failed. Please verify credentials.';
+      showToast(msg, 'error');
+      return { success: false, error: msg };
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const adminLogin = async (credentials: { email: string; password: string }): Promise<AdminAuthResult> => {
+    try {
+      setIsLoading(true);
+      const res = await api.post<AuthResponse>('/api/auth/admin/login', credentials);
+      localStorage.setItem('shaktishield_token', res.access_token);
+      setToken(res.access_token);
+      setUser(res.user);
+
+      if (res.user.approval_status === 'PENDING_APPROVAL') {
+        showToast('Application pending official authorization review.', 'info');
+        return { success: true, isPending: true };
+      }
+
+      showToast(`Administrator authenticated: ${res.user.full_name}`, 'success');
+      return { success: true, isPending: false };
+    } catch (error: any) {
+      const msg = error.message || 'Administrator authentication failed.';
+      showToast(msg, 'error');
+      return { success: false, error: msg };
     } finally {
       setIsLoading(false);
     }
@@ -73,11 +108,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       localStorage.setItem('shaktishield_token', res.access_token);
       setToken(res.access_token);
       setUser(res.user);
-      showToast('Registration successful! Your safety profile is armed.', 'success');
+      showToast('Registration successful! Safety shield activated.', 'success');
       return true;
     } catch (error: any) {
-      showToast(error.message || 'Registration failed.', 'error');
+      const msg = error.message || 'Registration failed.';
+      showToast(msg, 'error');
       return false;
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const adminRegister = async (data: any): Promise<AdminAuthResult> => {
+    try {
+      setIsLoading(true);
+      const res = await api.post<AuthResponse>('/api/auth/admin/register', data);
+      localStorage.setItem('shaktishield_token', res.access_token);
+      setToken(res.access_token);
+      setUser(res.user);
+      showToast('Administrator credentials submitted for review.', 'info');
+      return { success: true, isPending: true };
+    } catch (error: any) {
+      const msg = error.message || 'Administrator registration failed.';
+      showToast(msg, 'error');
+      return { success: false, error: msg };
     } finally {
       setIsLoading(false);
     }
@@ -92,7 +146,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       localStorage.removeItem('shaktishield_token');
       setToken(null);
       setUser(null);
-      showToast('You have been logged out safely.', 'info');
+      showToast('Logged out securely.', 'info');
     }
   };
 
@@ -112,16 +166,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     await fetchCurrentUser();
   };
 
+  const isAdmin = user?.role === 'admin' && user?.approval_status === 'APPROVED';
+  const isPendingAdmin = user?.role === 'admin' && user?.approval_status === 'PENDING_APPROVAL';
+
   return (
     <AuthContext.Provider
       value={{
         user,
         token,
         isAuthenticated: !!user,
-        isAdmin: user?.role === 'admin',
+        isAdmin,
+        isPendingAdmin,
         isLoading,
         login,
+        adminLogin,
         register,
+        adminRegister,
         logout,
         updateProfile,
         refreshUser,

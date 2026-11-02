@@ -12,6 +12,12 @@ class User(Base):
     full_name = Column(String(150), nullable=False)
     phone = Column(String(30), nullable=True)
     role = Column(String(20), default="user", nullable=False)  # "user" or "admin"
+    approval_status = Column(String(30), default="APPROVED", nullable=False)  # "APPROVED", "PENDING_APPROVAL", "REJECTED", "SUSPENDED"
+    organization_name = Column(String(200), nullable=True)
+    authorization_reference = Column(String(100), nullable=True)
+    license_document_url = Column(String(255), nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    approved_by_id = Column(Integer, nullable=True)
     blood_type = Column(String(10), nullable=True)
     emergency_notes = Column(Text, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)

@@ -1,4 +1,6 @@
 import jwt
+import hashlib
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from argon2 import PasswordHasher
@@ -31,6 +33,15 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return hasher.verify(hashed_password, plain_password)
     except (VerifyMismatchError, VerificationError, InvalidHashError):
         return False
+
+def hash_invitation_code(code: str) -> str:
+    """Compute SHA-256 digest of an admin invitation code."""
+    return hashlib.sha256(code.strip().encode("utf-8")).hexdigest()
+
+def generate_invitation_code(prefix: str = "SHAKTI-ADM-") -> str:
+    """Generate a high-entropy, single-use administrator invitation code."""
+    random_part = secrets.token_hex(8).upper()
+    return f"{prefix}{random_part}"
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """Create a signed JWT access token."""
@@ -93,10 +104,19 @@ def get_current_user(
 def get_current_admin(
     current_user: User = Depends(get_current_user)
 ) -> User:
-    """FastAPI dependency to ensure the user has administrative privileges."""
+    """
+    FastAPI dependency to ensure the user has administrator role
+    AND their approval status is 'APPROVED'.
+    Pending or rejected administrators are strictly forbidden.
+    """
     if current_user.role != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied: Administrator privileges required",
+            detail="Access denied: Administrator privileges required.",
+        )
+    if current_user.approval_status != "APPROVED":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrator account is pending authorization review and approval.",
         )
     return current_user

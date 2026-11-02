@@ -1,4 +1,5 @@
 import uuid
+from typing import Optional, List
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -75,6 +76,52 @@ def start_location_session(
     )
 
     return format_location_response(session)
+
+@router.get("/active", response_model=Optional[LocationSessionResponse])
+def get_user_active_session(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Retrieve the currently active location session for the authenticated user, if not expired."""
+    session = (
+        db.query(LocationSession)
+        .filter(
+            LocationSession.user_id == current_user.id,
+            LocationSession.is_active == True
+        )
+        .order_by(LocationSession.created_at.desc())
+        .first()
+    )
+    if not session:
+        return None
+
+    now = datetime.now(timezone.utc)
+    exp = session.expires_at
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+
+    if now > exp:
+        session.is_active = False
+        db.commit()
+        return None
+
+    return format_location_response(session)
+
+@router.get("/history", response_model=List[LocationSessionResponse])
+def get_user_location_history(
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Retrieve history of location sharing sessions for authenticated user."""
+    sessions = (
+        db.query(LocationSession)
+        .filter(LocationSession.user_id == current_user.id)
+        .order_by(LocationSession.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [format_location_response(s) for s in sessions]
 
 @router.get("/{session_code}", response_model=LocationSessionResponse)
 def get_location_session(

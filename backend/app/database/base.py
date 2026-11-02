@@ -6,3 +6,4 @@ from app.models.incident import SOSIncident
 from app.models.location import LocationSession
 from app.models.audit import AuditLog
 from app.models.notification import Notification
+from app.models.admin_invite import AdminInvitationCode

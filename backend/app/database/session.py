@@ -4,15 +4,26 @@ from app.core.config import settings
 
 db_url = settings.normalized_database_url
 
-connect_args = {}
-if db_url.startswith("sqlite"):
-    connect_args = {"check_same_thread": False}
+def get_engine():
+    """Create a resilient SQLAlchemy engine for Supabase PostgreSQL or SQLite fallback."""
+    url = settings.normalized_database_url
+    if url.startswith("sqlite"):
+        return create_engine(
+            url,
+            connect_args={"check_same_thread": False},
+            pool_pre_ping=True,
+        )
+    else:
+        # Supabase PostgreSQL configuration with connection pooling and recycling
+        return create_engine(
+            url,
+            pool_pre_ping=True,      # Tests connection liveness before usage
+            pool_recycle=300,        # Recycle connections every 5 minutes to prevent Supabase idle drops
+            pool_size=10,            # Steady-state connection pool size
+            max_overflow=20,         # Maximum overflow connections during traffic bursts
+        )
 
-engine = create_engine(
-    db_url,
-    connect_args=connect_args,
-    pool_pre_ping=True
-)
+engine = get_engine()
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
